@@ -3,6 +3,12 @@
 
     python3 make_map_viewer.py maps/room_20260801_155411.ply maps/room.html "Room scan"
 
+Pass --path <poses.json> from save_path.py (same run!) to also draw the SLAM
+trajectory through the cloud, so it's visible that the map was walked:
+
+    python3 make_map_viewer.py maps/room.ply maps/room.html "Room scan" \
+        --path maps/room.path.json
+
 The output is a single .html file with the point data embedded (base64) and a
 zero-dependency WebGL point-cloud renderer inside it -- no Three.js, no CDN, no
 fonts to fetch. That means it works dropped straight into a GitHub Pages site
@@ -115,15 +121,16 @@ HTML = r"""<!doctype html>
   <button class="btn" id="spin" aria-pressed="true">Auto-spin</button>
   <button class="btn" id="axis">Color: height</button>
   <button class="btn" id="reset">Reset view</button>
-  <label class="slider mono">size <input id="size" type="range" min="1" max="6" step="0.2" value="2.4"></label>
   <span class="hint mono">drag to orbit · scroll to zoom</span>
 </div>
 <script>
 const DATA="__DATA__", HASCOL=__HASCOL__, COLDATA="__COLDATA__";
 const BOUNDS=__BOUNDS__, NPTS=__NPTS__, EXTENT="__EXTENT__";
+const PATHDATA="__PATHDATA__", NPATH=__NPATH__;   // SLAM trajectory (optional)
 function b64f32(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer);}
 function b64u8(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}
 const pts=b64f32(DATA), cols=HASCOL?b64u8(COLDATA):null;
+const pathPts=NPATH?b64f32(PATHDATA):null;
 
 const cv=document.getElementById("gl");
 const gl=cv.getContext("webgl",{antialias:true,alpha:true});
@@ -137,8 +144,11 @@ void main(){ gl_Position=uMVP*vec4(p,1.0);
   float h = uAxis==0?p.x : (uAxis==1?p.y : p.z);
   vT = clamp((h-uH.x)/max(uH.y-uH.x,1e-4),0.0,1.0);
   vC = c;
-  gl_PointSize = clamp(uSize*260.0/gl_Position.w, 1.0, 22.0); }`;
-const fs=`precision mediump float; varying float vT; varying vec3 vC; uniform int uMode;
+  // 260.0 with a ceiling of 22.0 saturated the clamp at every size, making the
+  // size uniform a no-op; 12.0/64.0 spans a real range.
+  gl_PointSize = clamp(uSize*12.0/gl_Position.w, 1.0, 64.0); }`;
+const fs=`precision mediump float; varying float vT; varying vec3 vC;
+uniform int uMode; uniform int uLine;
 vec3 ramp(float t){ // deep-blue -> cyan -> green -> amber -> red
   vec3 a=vec3(0.13,0.20,0.55),b=vec3(0.09,0.72,0.79),c=vec3(0.35,0.85,0.38),
        d=vec3(0.98,0.79,0.22),e=vec3(0.92,0.27,0.24);
@@ -146,7 +156,10 @@ vec3 ramp(float t){ // deep-blue -> cyan -> green -> amber -> red
   if(t<0.5) return mix(b,c,(t-0.25)/0.25);
   if(t<0.75)return mix(c,d,(t-0.5)/0.25);
   return mix(d,e,(t-0.75)/0.25);}
-void main(){ vec2 q=gl_PointCoord*2.0-1.0; float r=dot(q,q); if(r>1.0)discard;
+void main(){
+  // lines have no gl_PointCoord — draw the trajectory as flat accent colour
+  if(uLine==1){ gl_FragColor=vec4(0.22,0.88,0.78,1.0); return; }
+  vec2 q=gl_PointCoord*2.0-1.0; float r=dot(q,q); if(r>1.0)discard;
   vec3 col = uMode==1 ? vC : ramp(vT);
   float shade = 1.0-0.35*r;
   gl_FragColor=vec4(col*shade,1.0); }`;
@@ -158,13 +171,18 @@ gl.linkProgram(prog);gl.useProgram(prog);
 const pb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,pb);gl.bufferData(gl.ARRAY_BUFFER,pts,gl.STATIC_DRAW);
 const aP=gl.getAttribLocation(prog,"p");gl.enableVertexAttribArray(aP);gl.vertexAttribPointer(aP,3,gl.FLOAT,false,0,0);
 const aC=gl.getAttribLocation(prog,"c");
-if(cols){const cb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,cb);
+let cbuf=null;   // hoisted: frame() rebinds it each pass alongside the path
+if(cols){cbuf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,cbuf);
   const cf=new Float32Array(cols.length);for(let i=0;i<cols.length;i++)cf[i]=cols[i]/255;
   gl.bufferData(gl.ARRAY_BUFFER,cf,gl.STATIC_DRAW);
   gl.enableVertexAttribArray(aC);gl.vertexAttribPointer(aC,3,gl.FLOAT,false,0,0);}
 else{gl.disableVertexAttribArray(aC);gl.vertexAttrib3f(aC,1,1,1);}
+let lb=null;
+if(pathPts){lb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,lb);
+  gl.bufferData(gl.ARRAY_BUFFER,pathPts,gl.STATIC_DRAW);}
 const uMVP=gl.getUniformLocation(prog,"uMVP"),uSize=gl.getUniformLocation(prog,"uSize"),
-  uH=gl.getUniformLocation(prog,"uH"),uAxis=gl.getUniformLocation(prog,"uAxis"),uMode=gl.getUniformLocation(prog,"uMode");
+  uH=gl.getUniformLocation(prog,"uH"),uAxis=gl.getUniformLocation(prog,"uAxis"),
+  uMode=gl.getUniformLocation(prog,"uMode"),uLine=gl.getUniformLocation(prog,"uLine");
 gl.enable(gl.DEPTH_TEST);gl.clearColor(0,0,0,0);
 
 // --- tiny mat4 ---
@@ -178,22 +196,27 @@ function dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
 function norm(a){const l=Math.hypot(a[0],a[1],a[2])||1;return[a[0]/l,a[1]/l,a[2]/l];}
 
 // --- camera / interaction ---
-let yaw=0.6,pitch=0.5,dist=2.6,spin=true,axis=2,mode=HASCOL?1:0,psize=2.4;
+// psize is fixed at the low end — no size control.
+let yaw=0.6,pitch=0.5,dist=2.6,spin=true,axis=2,mode=HASCOL?1:0;
+const psize=1;
 const D={yaw,pitch,dist};
 function resize(){const d=window.devicePixelRatio||1;cv.width=cv.clientWidth*d;cv.height=cv.clientHeight*d;gl.viewport(0,0,cv.width,cv.height);}
 window.addEventListener("resize",resize);resize();
 let drag=false,px=0,py=0;
 cv.addEventListener("pointerdown",e=>{drag=true;spin=false;setSpin();px=e.clientX;py=e.clientY;cv.setPointerCapture(e.pointerId);});
 cv.addEventListener("pointerup",()=>drag=false);
-cv.addEventListener("pointermove",e=>{if(!drag)return;yaw+=(e.clientX-px)*0.008;pitch+=(e.clientY-py)*0.008;
-  pitch=Math.max(-1.5,Math.min(1.5,pitch));px=e.clientX;py=e.clientY;});
+// Free orbit: pitch is unclamped so the camera can roll right over the poles.
+// Horizontal drag flips sign while inverted (cos(pitch)<0) so dragging always
+// pushes the model the way it looks like it should go.
+cv.addEventListener("pointermove",e=>{if(!drag)return;
+  yaw+=(e.clientX-px)*0.008*(Math.cos(pitch)<0?-1:1);pitch+=(e.clientY-py)*0.008;
+  px=e.clientX;py=e.clientY;});
 cv.addEventListener("wheel",e=>{e.preventDefault();dist*=Math.exp(e.deltaY*0.0011);dist=Math.max(0.4,Math.min(9,dist));},{passive:false});
 
 const $=id=>document.getElementById(id);
 function setSpin(){$("spin").setAttribute("aria-pressed",spin);}
 $("spin").onclick=()=>{spin=!spin;setSpin();};
 $("reset").onclick=()=>{yaw=0.6;pitch=0.5;dist=2.6;spin=true;setSpin();};
-$("size").oninput=e=>psize=parseFloat(e.target.value);
 const AX=["height (Z)","width (X)","depth (Y)"],AXV=[2,0,1];let axidx=0;
 $("axis").onclick=()=>{if(HASCOL&&mode===1){mode=0;}else{axidx=(axidx+1)%3;axis=AXV[axidx];if(HASCOL&&axidx===0){mode=1;}}
   $("axis").textContent = (HASCOL&&mode===1)?"Color: scan":("Color: "+AX[axidx]);};
@@ -203,13 +226,34 @@ function frame(){
   if(spin&&!reduce)yaw+=0.0032;
   const a=cv.width/cv.height;
   const cp=Math.cos(pitch),cy=Math.cos(yaw),sy=Math.sin(yaw),sp=Math.sin(pitch);
-  const eye=[dist*cp*sy,dist*sp,dist*cp*cy];
-  const mvp=mul(persp(1.05,a,0.01,100),look(eye,[0,0,0],[0,1,0]));
+  // Orbit around the data's Z axis (the room's true vertical) rather than Y,
+  // so auto-spin reads as a turntable under the room instead of tumbling it.
+  const eye=[dist*cp*sy,dist*cp*cy,dist*sp];
+  // up = d(eye)/d(pitch): always unit-length and perpendicular to the view ray,
+  // so lookAt never degenerates at the poles and flips over automatically.
+  const up=[-sp*sy,-sp*cy,cp];
+  const mvp=mul(persp(1.05,a,0.01,100),look(eye,[0,0,0],up));
   gl.uniformMatrix4fv(uMVP,false,new Float32Array(mvp));
-  gl.uniform1f(uSize,psize);gl.uniform2f(uH,BOUNDS[axis][0],BOUNDS[axis][1]);
+  // canvas is sized in device pixels, so scale by dpr to keep points the same
+  // physical size on a phone as on a desktop
+  gl.uniform1f(uSize,psize*(window.devicePixelRatio||1));
+  gl.uniform2f(uH,BOUNDS[axis][0],BOUNDS[axis][1]);
   gl.uniform1i(uAxis,axis);gl.uniform1i(uMode,mode);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  // point cloud
+  gl.bindBuffer(gl.ARRAY_BUFFER,pb);gl.vertexAttribPointer(aP,3,gl.FLOAT,false,0,0);
+  if(cols){gl.bindBuffer(gl.ARRAY_BUFFER,cbuf);gl.enableVertexAttribArray(aC);
+    gl.vertexAttribPointer(aC,3,gl.FLOAT,false,0,0);}
+  gl.uniform1i(uLine,0);
   gl.drawArrays(gl.POINTS,0,NPTS);
+
+  // trajectory: where the rig actually walked
+  if(lb){gl.bindBuffer(gl.ARRAY_BUFFER,lb);gl.vertexAttribPointer(aP,3,gl.FLOAT,false,0,0);
+    gl.disableVertexAttribArray(aC);gl.vertexAttrib3f(aC,1,1,1);
+    gl.uniform1i(uLine,1);
+    gl.drawArrays(gl.LINE_STRIP,0,NPATH);}
+
   requestAnimationFrame(frame);
 }
 $("axis").textContent=(HASCOL&&mode===1)?"Color: scan":"Color: height";
@@ -218,12 +262,26 @@ setSpin();frame();
 </body></html>"""
 
 
-def main():
-    if len(sys.argv) < 3:
-        print('usage: make_map_viewer.py <in.ply> <out.html> [title]'); sys.exit(1)
+def read_path(path):
+    """Poses from save_path.py -> (N,3) float array. Same run as the map, or
+    the frames won't line up."""
+    import json
     import numpy as np
-    inp, out = sys.argv[1], sys.argv[2]
-    title = sys.argv[3] if len(sys.argv) > 3 else "SLAM map"
+    with open(path) as f:
+        return np.array(json.load(f)["poses"], dtype=np.float32).reshape(-1, 3)
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if len(args) < 2:
+        print('usage: make_map_viewer.py <in.ply> <out.html> [title] '
+              '[--path <poses.json>]'); sys.exit(1)
+    import numpy as np
+    inp, out = args[0], args[1]
+    title = args[2] if len(args) > 2 else "SLAM map"
+    traj = None
+    if "--path" in sys.argv:
+        traj = read_path(sys.argv[sys.argv.index("--path") + 1])
 
     xyz, rgb, n = read_ply(inp)
     # center + scale to a unit box (camera framing is then automatic)
@@ -234,6 +292,15 @@ def main():
     ext = (xyz.max(0) - xyz.min(0)) * scale       # metres, original
     bounds = [[float(xyz[:, k].min()), float(xyz[:, k].max())] for k in range(3)]
 
+    # the trajectory MUST take the map's centre and scale, not its own, or the
+    # walk won't sit where it actually happened inside the room
+    n_path = 0
+    path_b64 = ""
+    if traj is not None and len(traj):
+        traj = ((traj - c) / scale).astype(np.float32)
+        n_path = len(traj)
+        path_b64 = base64.b64encode(traj.tobytes()).decode()
+
     html = (HTML
             .replace("__TITLE__", title)
             .replace("__DATA__", base64.b64encode(xyz.tobytes()).decode())
@@ -241,10 +308,16 @@ def main():
             .replace("__COLDATA__", base64.b64encode(rgb.tobytes()).decode() if rgb is not None else "")
             .replace("__BOUNDS__", str(bounds))
             .replace("__NPTS__", str(n))
+            .replace("__PATHDATA__", path_b64)
+            .replace("__NPATH__", str(n_path))
             .replace("__EXTENT__", f"{ext[0]:.1f}x{ext[1]:.1f}x{ext[2]:.1f}m"))
-    open(out, "w").write(html)
+    # explicit utf-8: the HTML contains "·" and would be mangled by a
+    # non-utf-8 platform default (e.g. cp1252 on Windows)
+    open(out, "w", encoding="utf-8").write(html)
     kb = len(html) / 1024
-    print(f"wrote {out} ({kb:.0f} KB, {n:,} points, colour={'yes' if rgb is not None else 'height'})")
+    print(f"wrote {out} ({kb:.0f} KB, {n:,} points, "
+          f"colour={'yes' if rgb is not None else 'height'}, "
+          f"path={n_path or 'none'})")
 
 
 if __name__ == "__main__":
