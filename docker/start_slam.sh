@@ -7,6 +7,15 @@
 #
 # Dashboards:  http://<jetson-ip>:8091  (depth/epipolar diag)
 #              http://<jetson-ip>:8092  (room map, trackpad-navigable)
+#
+# Feature toggles (systematically build up — each can be turned on per-launch):
+#   SEMANTIC=1     structural depth filter: plane fit + bug-line rejection (CPU, on)
+#   SEMANTIC_ML=1  neural object ID (YOLOv8-seg, TensorRT) ....... OFF by default
+#   MONO_DEPTH=1   neural corner fill (Depth Anything V2) ......... OFF by default
+#   SEM_CORNER_FILL=1  geometric corner synthesis ................ OFF by default
+# The two neural models each hold ~0.7-0.8 GB of GPU memory; running both plus
+# dense mapping on the 8 GB board is what hit the GPU cap. Off = stable baseline.
+# Re-enable one at a time, e.g.:  MONO_DEPTH=1 ./docker/start_slam.sh
 set -e
 
 docker rm -f slam 2>/dev/null || true
@@ -48,11 +57,11 @@ docker run -d --name slam --rm \
     -e SEMANTIC=1 \
     -e SEM_PLANE_THRESH=0.03 -e SEM_N_PLANES=3 -e SEM_MIN_PLANE=1200 \
     -e SEM_PROC_W=384 -e SEM_RANSAC_ITERS=40 \
-    -e SEM_CORNER_FILL=1 -e SEM_CORNER_BAND=0.12 \
+    -e SEM_CORNER_FILL=${SEM_CORNER_FILL:-0} -e SEM_CORNER_BAND=0.12 \
     -e SEM_LINE_REJECT=0.80 -e SEM_MIN_CLUSTER=40 -e SEM_CLUSTER_VOX=0.05 \
-    -e SEMANTIC_ML=${SEMANTIC_ML:-1} \
+    -e SEMANTIC_ML=${SEMANTIC_ML:-0} \
     -e SEG_ENGINE=/workspace/models/yolov8n-seg.engine -e SEG_IMGSZ=480 -e SEG_HZ=${SEG_HZ:-0.5} \
-    -e MONO_DEPTH=${MONO_DEPTH:-1} \
+    -e MONO_DEPTH=${MONO_DEPTH:-0} \
     -e MONO_ENGINE=/workspace/models/depth_anything_v2_vits.engine -e MONO_H=252 -e MONO_W=392 -e MONO_HZ=${MONO_HZ:-0.5} \
     -e MONO_FILL=1 -e MONO_FILL_DILATE=18 -e MONO_FILL_MAX=4.0 \
     slam:latest ros2 launch /workspace/ros/slam_launch.py
