@@ -1,0 +1,28 @@
+# --- generated ML model binaries (rebuild with models/build_*.sh) ----------
+models/*.onnx
+models/*.engine
+models/*.pt
+models/pydeps/
+
+# --- vendored / cloned dependencies (have their own git history) ------------
+nvblox_src/
+isaac_ros_common/
+
+# --- large calibration capture image sets + experimental/backup results ----
+calib/captures_*/
+calib/_subset27/
+calib/pairA_27/
+calib/pairA_recal/
+calib/pairA.bak_*/
+
+# --- runtime data / outputs ------------------------------------------------
+maps/
+*.log
+*.foxe
+
+# --- python cruft ----------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.DS_Store

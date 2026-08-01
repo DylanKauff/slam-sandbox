@@ -1,0 +1,55 @@
+{
+  "configById": {
+    "3D!slam": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 8,
+        "phi": 55,
+        "thetaOffset": 45,
+        "targetOffset": [0, 0, 0],
+        "target": [0, 0, 0],
+        "targetOrientation": [0, 0, 0, 1],
+        "fovy": 45,
+        "near": 0.05,
+        "far": 5000
+      },
+      "followMode": "follow-position",
+      "followTf": "base_link",
+      "scene": {
+        "backgroundColor": "#101018"
+      },
+      "topics": {
+        "/nvblox_node/mesh": { "visible": true },
+        "/visual_slam/tracking/slam_path": {
+          "visible": true,
+          "lineWidth": 0.04,
+          "color": "#00e5a0"
+        },
+        "/visual_slam/tracking/vo_path": { "visible": false },
+        "/nvblox_node/static_esdf_pointcloud": { "visible": false },
+        "/camera_0/depth/image": { "visible": false }
+      }
+    },
+    "Image!cam": {
+      "imageMode": { "imageTopic": "/stereo/preview/compressed" },
+      "cameraTopic": "/stereo/preview/compressed"
+    },
+    "RawMessages!pose": {
+      "topicPath": "/visual_slam/tracking/vo_pose.pose.position"
+    }
+  },
+  "layout": {
+    "direction": "row",
+    "first": "3D!slam",
+    "second": {
+      "direction": "column",
+      "first": "Image!cam",
+      "second": "RawMessages!pose",
+      "splitPercentage": 65
+    },
+    "splitPercentage": 74
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": { "speed": 1 }
+}
